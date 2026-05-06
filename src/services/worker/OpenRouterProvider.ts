@@ -21,9 +21,13 @@ const DEFAULT_OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completion
 
 function getOpenRouterApiUrl(): string {
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-  const customBaseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || process.env.CLAUDE_MEM_OPENROUTER_BASE_URL;
+  const customBaseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL;
   if (customBaseUrl) {
-    const baseUrl = customBaseUrl.endsWith('/') ? customBaseUrl.slice(0, -1) : customBaseUrl;
+    try { new URL(customBaseUrl); } catch {
+      logger.error('SDK', `Invalid OPENROUTER_BASE_URL: ${customBaseUrl}, falling back to default`);
+      return DEFAULT_OPENROUTER_API_URL;
+    }
+    const baseUrl = customBaseUrl.replace(/\/+$/, '');
     return `${baseUrl}/chat/completions`;
   }
   return DEFAULT_OPENROUTER_API_URL;
@@ -440,11 +444,12 @@ export class OpenRouterProvider {
     });
 
     let priorRequestId: string | null = null;
+    const apiUrl = getOpenRouterApiUrl();
 
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await fetch(getOpenRouterApiUrl(), {
+        response = await fetch(apiUrl, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
