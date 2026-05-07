@@ -153,100 +153,7 @@ const baseURL = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL
 
 ---
 
-## 五、自定义 Relay（可选方案）
-
-如果不使用 LiteLLM，可自建 Node 服务：
-
-```js
-import express from "express";
-
-const app = express();
-app.use(express.json());
-
-app.post("/v1/chat/completions", async (req, res) => {
-  const r = await fetch("https://你的上游API", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${process.env.API_KEY}`
-    },
-    body: JSON.stringify(req.body)
-  });
-
-  const text = await r.text();
-  res.status(r.status).type("application/json").send(text);
-});
-
-app.listen(4000, () => {
-  console.log("Relay running on http://127.0.0.1:4000");
-});
-```
-
----
-
-## 六、推荐功能扩展
-
-建议逐步加入：
-
-```text
-✔ 自动重试（429 / timeout）
-✔ 多模型 fallback
-✔ 日志记录
-✔ 请求限流
-✔ 代理支持
-✔ 模型路由策略
-```
-
----
-
-## 七、推荐实施步骤
-
-```text
-1️⃣ 确认第三方模型 API 可用（curl 测试）
-2️⃣ 部署 LiteLLM 或 Relay
-3️⃣ 验证本地 /v1/chat/completions 接口
-4️⃣ 修改 claude-mem baseURL 指向本地
-5️⃣ 启动 claude，观察 observation 是否生成
-6️⃣ 增加 fallback 和稳定性优化
-```
-
----
-
-## 八、模型选择建议
-
-避免使用：
-
-```text
-❌ openai/*
-❌ google/*
-❌ anthropic/*
-```
-
-优先选择：
-
-```text
-✔ deepseek
-✔ qwen
-✔ mistral
-✔ nvidia
-✔ 国内 OpenAI-compatible 提供商
-```
-
----
-
-## 九、方案优势总结
-
-```text
-✔ 不修改 claude-mem 核心逻辑
-✔ 支持任意模型接入
-✔ 可统一处理代理/限流/错误
-✔ 可扩展 fallback
-✔ 长期可维护
-```
-
----
-
-## 十、实战经验：LiteLLM 的坑与自建代理方案
+## 五、实战经验：LiteLLM 的坑与自建代理方案
 
 ### 问题背景
 
@@ -366,7 +273,7 @@ if __name__ == "__main__":
 
 ---
 
-## 十一、最终实施方案（2026-05-06 验证完成）
+## 六、最终实施方案（2026-05-06 验证完成）
 
 ### 架构确认
 
@@ -442,7 +349,7 @@ function getOpenRouterApiUrl(): string {
 
 ---
 
-## 十二、每日启动流程
+## 七、每日启动流程
 
 ### 方式1：手动启动（推荐）
 
@@ -494,7 +401,7 @@ curl.exe -s http://127.0.0.1:37778/health
 
 ---
 
-## 十三、验证办法
+## 八、验证办法
 
 ### 1. 代理层验证
 
@@ -593,7 +500,7 @@ npm run worker:logs | Select-String "ERROR|WARN" -Context 2
 
 ---
 
-## 十四、故障排查
+## 九、故障排查
 
 ### 问题1：proxy_bridge 无法启动
 
@@ -650,7 +557,7 @@ Test-NetConnection -ComputerName 127.0.0.1 -Port 4000
 
 ---
 
-## 十五、调优记录（2026-05-06）
+## 十、调优记录（2026-05-06）
 
 ### 问题5：观察解析失败（空内容）
 
@@ -788,8 +695,126 @@ const TYPE_ALIASES: Record<string, string> = {
 
 ---
 
-## 十六、一句话总结
+## 十一、Anyrouter 接入改造（2026-05-07）
 
-> **通过 proxy_bridge.py 将 claude-mem 与第三方模型解耦，实现稳定、可控的模型调用体系。每日启动一条命令，自动化脚本处理所有细节。**
+### 背景
+
+`capi.quan2go.com` 额度耗尽，需要替换上游端点。经测试 Anyrouter（`anyrouter.top`）可用，但它**只支持 OpenAI Responses API 格式**（`/v1/responses`），不支持 Chat Completions。
+
+### 可用性测试结论
+
+| 端点 | 延迟 | 状态 |
+|------|------|------|
+| `anyrouter.top` (主站) | ~1s | 可达 |
+| `a-ocnfniawgw.cn-shanghai.fcapp.run` (上海优化) | ~0.4s | **推荐** |
+| `pmpjfbhq.cn-nb1.rainapp.top` (备用) | ~1.4s | 可达但无 API 路由 |
+
+| 模型 | 状态 |
+|------|------|
+| **gpt-5.3-codex** | ✅ 可用（实际返回 gpt-5.4） |
+| **gpt-5.5** | ✅ 可用 |
+| gpt-5-codex | ❌ 402 额度不足 |
+| claude-* | ❌ 仅限 Claude Code 客户端 |
+| gemini-* | ❌ 不支持 |
+
+详细报告见 `AnyrouterAPI可用性测试报告.md`。
+
+### 架构变更
+
+```text
+claude-mem worker (port 37778)
+  ↓ [OpenRouterProvider.ts]
+proxy_bridge.py (port 4000, WSL Ubuntu-24.04)
+  ↓ [Chat Completions → Responses API 格式转换]
+a-ocnfniawgw.cn-shanghai.fcapp.run/v1/responses
+  ↓ [gpt-5.3-codex 模型]
+响应 ← [Responses → Chat Completions 格式转换]
+```
+
+### proxy_bridge.py 改造要点
+
+**新增环境变量**:
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `UPSTREAM_URL` | `https://a-ocnfniawgw.cn-shanghai.fcapp.run/v1/responses` | 上游端点 |
+| `UPSTREAM_FORMAT` | `responses` | 上游 API 格式（`responses` 或 `chat_completions`） |
+| `UPSTREAM_MODEL` | `gpt-5.3-codex` | 强制使用的模型名 |
+| `UPSTREAM_API_KEY` | — | API Key（从环境变量读取，不硬编码） |
+| `TIMEOUT_SECONDS` | `90` | 超时（从 60s 提升） |
+
+**格式转换逻辑**:
+
+请求转换（`convert_to_responses_format`）:
+```text
+messages → input（过滤 system 消息）
+system messages → instructions（多条合并）
+max_tokens / max_completion_tokens → max_output_tokens
+tool/function role → 跳过（不支持）
+list-type content → 提取 text 块拼接
+```
+
+响应转换（`convert_from_responses_format`）:
+```text
+output[].content[].text → choices[0].message.content
+status: completed → finish_reason: stop
+status: incomplete → finish_reason: length
+status: failed → 抛出 ValueError（触发错误响应）
+usage.input_tokens → prompt_tokens
+usage.output_tokens → completion_tokens
+created_at（ISO string）→ created（unix timestamp）
+```
+
+**路由逻辑**:
+```python
+if UPSTREAM_FORMAT == "responses":
+    return await forward_responses_api(body)
+else:
+    body["stream"] = True
+    return await forward_with_retry(body)
+```
+
+客户端接口不变（`/v1/chat/completions`），内部根据 `UPSTREAM_FORMAT` 选择转发路径。
+
+### 启动命令
+
+```bash
+wsl -d Ubuntu-24.04 -- bash -c "
+  export UPSTREAM_API_KEY=\$(<~/.anyrouter_key)
+  nohup python3 /home/laserqc/litellm/proxy_bridge.py > /tmp/proxy_bridge.log 2>&1 &disown
+"
+```
+
+API Key 存储建议：
+```bash
+# 写入文件（一次性）
+echo 'your-key-here' > ~/.anyrouter_key && chmod 600 ~/.anyrouter_key
+```
+
+### 验证
+
+```powershell
+# 健康检查
+curl.exe -s http://127.0.0.1:4000/health
+
+# 预期输出
+# {"status":"ok","upstream":"https://a-ocnfniawgw.cn-shanghai.fcapp.run/v1/responses","config":{...}}
+
+# 推理测试
+curl.exe -s http://127.0.0.1:4000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"gpt-5.3-codex\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+
+# 预期：返回标准 Chat Completions JSON，content 非空
+
+# SDK observation 测试
+curl.exe -s http://localhost:4000/v1/chat/completions -H "Content-Type: application/json" --data-binary "@D:\GitHub\claude-mem\test-sdk-prompt.json"
+
+# 预期：返回 <observation> XML 格式内容
+```
+
+---
+
+## 十二、一句话总结
+
+> **通过 proxy_bridge.py 将 claude-mem 与第三方模型解耦，支持 Chat Completions 和 Responses API 双格式上游，实现稳定、可控的模型调用体系。**
 
 ---

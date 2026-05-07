@@ -8,6 +8,7 @@ const TYPE_ALIASES: Record<string, string> = {
   add: 'feature', create: 'feature', implement: 'feature', new: 'feature',
   find: 'discovery', explore: 'discovery', investigate: 'discovery',
   verification: 'discovery', check: 'discovery', test: 'discovery', debug: 'discovery',
+  'code-discovery': 'discovery', research: 'discovery', analyze: 'discovery', review: 'discovery',
   restructure: 'refactor', cleanup: 'refactor', reorganize: 'refactor',
 };
 
@@ -143,7 +144,7 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
       if (validTypes.includes(mapped)) {
         finalType = mapped;
       } else {
-        logger.error('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
+        logger.warn('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
       }
     } else {
       logger.error('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
