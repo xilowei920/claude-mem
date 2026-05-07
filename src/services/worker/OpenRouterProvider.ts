@@ -500,13 +500,15 @@ export class OpenRouterProvider {
         });
       }
 
-      return responseData;
-    }, { label: `OpenRouter ${model}` });
+      if (!responseData.choices?.[0]?.message?.content) {
+        throw new ClassifiedProviderError(
+          'OpenRouter returned empty content',
+          { kind: 'transient', cause: new Error('Empty content in 200 response') },
+        );
+      }
 
-    if (!data.choices?.[0]?.message?.content) {
-      logger.error('SDK', 'Empty response from OpenRouter');
-      return { content: '' };
-    }
+      return responseData;
+    }, { label: `OpenRouter ${model}`, perAttemptTimeoutMs: 90_000 });
 
     const content = data.choices[0].message.content;
     const tokensUsed = data.usage?.total_tokens;

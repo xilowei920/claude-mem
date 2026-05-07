@@ -444,31 +444,7 @@ function getOpenRouterApiUrl(): string {
 
 ## 十二、每日启动流程
 
-### 方式1：自动化脚本（推荐）
-
-**脚本位置**: `scripts/start-relay-chain.ps1`
-
-**用法**:
-```powershell
-# 完整启动（proxy_bridge + worker）
-.\scripts\start-relay-chain.ps1
-
-# 仅启动 worker（proxy_bridge 已在运行）
-.\scripts\start-relay-chain.ps1 -SkipProxy
-
-# 详细日志
-.\scripts\start-relay-chain.ps1 -Verbose
-```
-
-**脚本功能**:
-- ✅ 自动杀死旧进程
-- ✅ 启动 proxy_bridge（WSL）
-- ✅ 等待端口就绪
-- ✅ 健康检查
-- ✅ 启动 claude-mem worker
-- ✅ 验证端点可用
-
-### 方式2：手动启动
+### 方式1：手动启动（推荐）
 
 **步骤1：启动 proxy_bridge**
 ```powershell
@@ -491,6 +467,30 @@ npm run worker:restart
 ```powershell
 curl.exe -s http://127.0.0.1:37778/health
 ```
+
+### 方式2：自动化脚本（备选）
+
+**脚本位置**: `scripts/start-relay-chain.ps1`
+
+**用法**:
+```powershell
+# 完整启动（proxy_bridge + worker）
+.\scripts\start-relay-chain.ps1
+
+# 仅启动 worker（proxy_bridge 已在运行）
+.\scripts\start-relay-chain.ps1 -SkipProxy
+
+# 详细日志
+.\scripts\start-relay-chain.ps1 -Verbose
+```
+
+**脚本功能**:
+- ✅ 自动杀死旧进程
+- ✅ 启动 proxy_bridge（WSL）
+- ✅ 等待端口就绪
+- ✅ 健康检查
+- ✅ 启动 claude-mem worker
+- ✅ 验证端点可用
 
 ---
 
@@ -650,7 +650,145 @@ Test-NetConnection -ComputerName 127.0.0.1 -Port 4000
 
 ---
 
-## 十五、一句话总结
+## 十五、调优记录（2026-05-06）
+
+### 问题5：观察解析失败（空内容）
+
+**症状**:
+```
+[ERROR] [PARSER] Observation missing type field, using "bugfix"
+[WARN ] [PARSER] Skipping empty observation (all content fields null)
+[WARN ] [PARSER] OpenRouter returned unparseable response — leaving queue intact
+```
+
+**根因**: `CLAUDE_MEM_OPENROUTER_MAX_TOKENS=4096` 控制的是上下文窗口截断阈值。init prompt 本身约 4000 tokens，导致对话被截断到只剩 2 条消息，模型缺乏上下文无法生成有意义的观察。
+
+**日志证据**:
+```
+Context window truncated to prevent runaway costs {originalMessages=23, keptMessages=2, droppedMessages=21, estimatedTokens=4084, tokenLimit=4096}
+```
+
+**修复**:
+```json
+{
+  "CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES": "6",
+  "CLAUDE_MEM_OPENROUTER_MAX_TOKENS": "16384"
+}
+```
+
+- `MAX_TOKENS`: 4096 → 16384（给 init prompt 足够空间）
+- `MAX_CONTEXT_MESSAGES`: 20 → 6（减少发送的对话轮数，避免触发 Cloudflare 超时）
+
+---
+
+### 问题6：API Error 524
+
+**症状**: proxy_bridge 返回 524 错误
+
+**根因**: Cloudflare 网关超时（100s）。调大 MAX_TOKENS 后上下文变大，upstream 处理时间超过 Cloudflare 限制。
+
+**修复**: 配合减少 `MAX_CONTEXT_MESSAGES` 到 6，每次请求 token 量控制在 8000-12000，远低于超时阈值。
+
+---
+
+### 问题7：偶发空响应
+
+**症状**:
+```
+[ERROR] [SDK] Empty response from OpenRouter
+[ERROR] [SDK] Empty OpenRouter init response - session may lack context
+```
+
+**根因**: upstream 偶尔返回空 content（SSE 流中无有效 delta）。
+
+**修复**: proxy_bridge.py 增加空内容重试逻辑：
+
+```python
+result = await collect_sse_chunks(resp)
+content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+if not content and attempt < MAX_RETRIES:
+    delay = 2 ** attempt
+    print(f"[RETRY] Empty content from upstream, waiting {delay}s")
+    await asyncio.sleep(delay)
+    last_error = "Empty content"
+    continue
+return web.json_response(result)
+```
+
+收到空内容时自动重试（最多 MAX_RETRIES 次），而非直接返回空响应给 worker。
+
+---
+
+### 最终配置参数
+
+| 参数 | 旧值 | 新值 | 原因 |
+|------|------|------|------|
+| `CLAUDE_MEM_OPENROUTER_MAX_TOKENS` | 4096 | 16384 | 避免 init prompt 被截断 |
+| `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES` | 20 | 6 | 避免 Cloudflare 524 超时 |
+| proxy_bridge 空内容重试 | 无 | 有 | 应对 upstream 偶发空响应 |
+
+---
+
+### 问题8：pending_messages 表缺少 retry_count 列（2026-05-07）
+
+**症状**:
+```
+[ERROR] [SESSION] Failed to persist observation to DB table pending_messages has no column named retry_count
+```
+
+**根因**: 数据库迁移 v31/v32 已删除 `retry_count` 列，但部署的 `worker-service.cjs` bundle 是旧版本，INSERT 语句仍引用该列。
+
+**修复**: 重新执行 `npm run build` 生成新 bundle，部署到 plugin cache 目录。
+
+---
+
+### 问题9：空响应不触发重试（2026-05-07）
+
+**症状**: 模型偶尔返回空 content，worker 直接返回 `{ content: '' }` 不重试。
+
+**根因**: `OpenRouterProvider.ts` 中空内容检查在 `withRetry` 回调外部，不会触发重试机制。
+
+**修复** (`src/services/worker/OpenRouterProvider.ts:503-508`):
+```typescript
+if (!responseData.choices?.[0]?.message?.content) {
+  throw new ClassifiedProviderError(
+    'OpenRouter returned empty content',
+    { kind: 'transient', cause: new Error('Empty content in 200 response') },
+  );
+}
+```
+
+将空内容检查移入 `withRetry` 回调内部，抛出 `transient` 类型错误，自动重试最多 2 次。
+
+---
+
+### 问题10：模型返回非标准 observation type（2026-05-07）
+
+**症状**:
+```
+[ERROR] [PARSER] Invalid observation type: write, using "bugfix"
+[ERROR] [PARSER] Invalid observation type: verification, using "bugfix"
+```
+
+**根因**: gpt-5.4-mini 不严格遵循 XML prompt 中定义的 type 枚举，返回 `write`、`verification` 等自由文本。
+
+**修复** (`src/sdk/parser.ts:5-12`):
+```typescript
+const TYPE_ALIASES: Record<string, string> = {
+  write: 'change', edit: 'change', update: 'change', modify: 'change',
+  fix: 'bugfix', patch: 'bugfix', repair: 'bugfix',
+  add: 'feature', create: 'feature', implement: 'feature', new: 'feature',
+  find: 'discovery', explore: 'discovery', investigate: 'discovery',
+  verification: 'discovery', check: 'discovery', test: 'discovery', debug: 'discovery',
+  restructure: 'refactor', cleanup: 'refactor', reorganize: 'refactor',
+};
+```
+
+模块级别名映射表，将非标准 type 自动转换为有效类型。
+
+---
+
+## 十六、一句话总结
 
 > **通过 proxy_bridge.py 将 claude-mem 与第三方模型解耦，实现稳定、可控的模型调用体系。每日启动一条命令，自动化脚本处理所有细节。**
 

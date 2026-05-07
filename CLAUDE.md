@@ -8,6 +8,10 @@
 
 **License**: AGPL-3.0 (open-source core) + PolyForm Noncommercial 1.0.0 (ragtime/ directory)
 
+## 本地化改动和环境介绍
+轻量级代理 运行在WSL环境脚本文件 /home/laserqc/litellm/proxy_bridge.py
+相关资料索引 ./Claude-mem 外部代理（Relay）接入第三方模型实施方案.md
+
 ## Build & Development
 
 ### Common Commands

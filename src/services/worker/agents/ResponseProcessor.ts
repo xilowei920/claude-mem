@@ -35,7 +35,7 @@ export async function processAgentResponse(
   const parsed = parseAgentXml(text, session.contentSessionId);
 
   if (!parsed.valid) {
-    logger.warn('PARSER', `${agentName} returned unparseable response — leaving queue intact`, {
+    logger.warn('PARSER', `${agentName} returned unparseable response — leaving queue intact | preview=${text?.substring(0, 300)}`, {
       sessionId: session.sessionDbId,
     });
     // Reset claimed messages back to pending so they're re-claimed on the

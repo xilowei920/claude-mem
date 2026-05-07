@@ -2,6 +2,15 @@
 import { logger } from '../utils/logger.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
 
+const TYPE_ALIASES: Record<string, string> = {
+  write: 'change', edit: 'change', update: 'change', modify: 'change',
+  fix: 'bugfix', patch: 'bugfix', repair: 'bugfix',
+  add: 'feature', create: 'feature', implement: 'feature', new: 'feature',
+  find: 'discovery', explore: 'discovery', investigate: 'discovery',
+  verification: 'discovery', check: 'discovery', test: 'discovery', debug: 'discovery',
+  restructure: 'refactor', cleanup: 'refactor', reorganize: 'refactor',
+};
+
 // TODO(#2233): migrate to Anthropic tool-use API for deterministic JSON output. This text-XML path is the bridge.
 // Only strip fences when the entire payload is a single fenced block. Stripping
 // the first opening + last closing fence anywhere in the string can corrupt
@@ -105,10 +114,34 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     const mode = ModeManager.getInstance().getActiveMode();
     const validTypes = mode.observation_types.map(t => t.id);
     const fallbackType = validTypes[0];
+
+    // Plain-text fallback: model returned raw text without inner XML tags.
+    // Treat the entire content as narrative so it's not silently dropped.
+    const hasAnyInnerTag = /<(?:type|title|subtitle|narrative|facts|concepts|files_read|files_modified)\b/.test(obsContent);
+    if (!hasAnyInnerTag) {
+      const trimmedContent = obsContent.trim();
+      if (trimmedContent) {
+        logger.info('PARSER', `Plain-text observation recovered as discovery | len=${trimmedContent.length}`, { correlationId });
+        observations.push({
+          type: validTypes.includes('discovery') ? 'discovery' : fallbackType,
+          title: null,
+          subtitle: null,
+          facts: [],
+          narrative: trimmedContent,
+          concepts: [],
+          files_read: [],
+          files_modified: []
+        });
+      }
+      continue;
+    }
+
     let finalType = fallbackType;
     if (type) {
-      if (validTypes.includes(type.trim())) {
-        finalType = type.trim();
+      const normalized = type.trim().toLowerCase();
+      const mapped = TYPE_ALIASES[normalized] ?? normalized;
+      if (validTypes.includes(mapped)) {
+        finalType = mapped;
       } else {
         logger.error('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
       }
@@ -128,9 +161,8 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     }
 
     if (!title && !narrative && facts.length === 0 && cleanedConcepts.length === 0) {
-      logger.warn('PARSER', 'Skipping empty observation (all content fields null)', {
+      logger.warn('PARSER', `Skipping empty observation (all content fields null) | type=${finalType} | raw=${obsContent?.substring(0, 200)}`, {
         correlationId,
-        type: finalType
       });
       continue;
     }
